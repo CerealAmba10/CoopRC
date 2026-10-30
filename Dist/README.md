@@ -1,4 +1,4 @@
-# CoopRC: 4-player co-op campaign for Star Wars: Republic Commando
+﻿# CoopRC: 4-player co-op campaign for Star Wars: Republic Commando
 
 The host plays Boss (Delta 38). Up to three friends join as Sev (07), Fixer (40) and Scorch (62),
 each in their own armour with matching first-person arms. Any commando nobody is playing stays AI and
@@ -48,6 +48,8 @@ Other ways in:
 - `Host-Coop.bat geo_03a` starts straight at a level (map files are in `GameData\Maps`); friends can join
   mid-mission and appear next to Boss.
 - Direct connection instead of Steam: `Join-Coop.bat <host IP> [slot]` (LAN, VPN, or UDP 7777 forwarded).
+  Another forwarded port works too: the host runs `Host-Coop.bat 25565`, friends `Join-Coop.bat <host IP>:25565 07`.
+  The forward must include **UDP**.
 
 ## How co-op works
 - **Everyone gets the player kit** (DC-17, DC-15s, bacta, grenades) and can hack, slice, set charges
