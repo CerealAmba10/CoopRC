@@ -6,8 +6,8 @@ join as Sev, Fixer and Scorch. A Steam relay connects players without port forwa
 **Players:** download `CoopRC-Setup-<version>.exe` from [Releases](../../releases), run it, and read
 [the player README](Dist/README.md). Later versions: run `Update-CoopRC.bat` in the installed CoopRC folder.
 
-Requires [Republic Commando Fix 2.15+](https://github.com/SWRC-Modding/CT/releases) and the Steam version of the game
-(for the relay).
+Requires [Republic Commando Fix 2.15+](https://github.com/SWRC-Modding/CT/releases); the installer downloads it from
+there if it's missing. The Steam relay needs the Steam version of the game.
 
 ## Layout
 - `Classes/`: UnrealScript (`CoopRC.u`), built with RC Fix's `UCC make` via `build.ps1`

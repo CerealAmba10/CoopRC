@@ -41,7 +41,35 @@ if ($Uninstall) {
 	return
 }
 
-# CoopRC needs Republic Commando Fix 2.15+ (FunctionOverride lives in its Mod.u / Mod.dll).
+# CoopRC needs Republic Commando Fix 2.15+ (FunctionOverride lives in its Mod.u / Mod.dll). If it's missing,
+# fetch the official release (it has no license to redistribute, so it isn't bundled) and install it the way
+# its README says: everything into GameData\System. The files it replaces are kept as *.before-RCFix.
+if (-not (Test-Path "$sys\Mod.dll")) {
+	$fixUrl = "https://github.com/SWRC-Modding/CT/releases/download/SWRC_Fix_v2.15/SWRCFix2.15.zip"
+	$fixHash = "DA0AFA607B751C17EBEC2E584387C7F440D665F038D66B2F6DDAA2A96A028B53"
+	Write-Host "Republic Commando Fix not found, installing 2.15 from github.com/SWRC-Modding/CT..."
+	[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+	$fixZip = Join-Path $env:TEMP "SWRCFix2.15.zip"
+	Invoke-WebRequest $fixUrl -OutFile $fixZip -UseBasicParsing
+	if ((Get-FileHash $fixZip -Algorithm SHA256).Hash -ne $fixHash) {
+		Remove-Item $fixZip
+		throw "The Republic Commando Fix download didn't match the expected file. Install it by hand: https://github.com/SWRC-Modding/CT/releases"
+	}
+
+	Add-Type -AssemblyName System.IO.Compression.FileSystem
+	$archive = [IO.Compression.ZipFile]::OpenRead($fixZip)
+	try {
+		foreach ($e in $archive.Entries | Where-Object { $_.Name -ne "" }) {
+			$dest = Join-Path $sys ($e.FullName -replace '/', '\')
+			if ((Test-Path $dest) -and -not (Test-Path "$dest.before-RCFix")) { Copy-Item $dest "$dest.before-RCFix" }
+			New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
+			[IO.Compression.ZipFileExtensions]::ExtractToFile($e, $dest, $true)
+		}
+	}
+	finally { $archive.Dispose(); Remove-Item $fixZip }
+	Write-Host "Republic Commando Fix 2.15 installed."
+}
+
 if (-not (Test-Path "$sys\Mod.dll") -or -not (Test-Path "$sys\CT.exe")) {
 	throw "Install Republic Commando Fix 2.15 first: https://github.com/SWRC-Modding/CT/releases"
 }

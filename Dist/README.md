@@ -1,4 +1,4 @@
-﻿# CoopRC: 4-player co-op campaign for Star Wars: Republic Commando
+# CoopRC: 4-player co-op campaign for Star Wars: Republic Commando
 
 The host plays Boss (Delta 38). Up to three friends join as Sev (07), Fixer (40) and Scorch (62),
 each in their own armour with matching first-person arms. Any commando nobody is playing stays AI and
@@ -7,11 +7,11 @@ follows Boss's squad orders as usual.
 ## Requirements
 - Star Wars: Republic Commando (Steam or GOG), the same version on every PC.
 - **Republic Commando Fix 2.15 or newer** on every PC: https://github.com/SWRC-Modding/CT/releases
+  (the CoopRC setup installs it for you if it's missing; it sets the game's text language to English)
 - Every player installs this same CoopRC zip (the package must match exactly).
 
 ## Install (every player)
-1. Install Republic Commando Fix.
-2. Run `CoopRC-Setup.exe`. It finds your game (or asks for the folder), unpacks to
+1. Run `CoopRC-Setup.exe`. It finds your game (or asks for the folder), unpacks to
    `...\Star Wars Republic Commando\CoopRC\` and runs `Install-CoopRC.ps1` from there.
    (Without the exe: unzip into the game folder and run
    `powershell -ExecutionPolicy Bypass -File CoopRC\Install-CoopRC.ps1`.)
