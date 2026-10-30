@@ -1,0 +1,8 @@
+# Build output
+out/
+Relay/bin/
+Relay/obj/
+*.log
+
+# Recoloured copies of the game's own arm textures: built on each player's PC by Build-Arms.ps1, never shipped
+Textures/
