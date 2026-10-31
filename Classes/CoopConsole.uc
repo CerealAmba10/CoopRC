@@ -15,6 +15,7 @@ var FunctionOverride MovieOverride;
 var FunctionOverride MovieTickOverride;
 var FunctionOverride NewGameOverride;
 var FunctionOverride UplinkOverride;
+var FunctionOverride MusicOverride, BattleMultiOverride, ForceBattleOverride, SoundMenuOverride, LoadGameOverride;
 var CoopArms         Arms;
 
 var bool   bIntroActive, bIntroHost, bReconnecting;
@@ -76,6 +77,21 @@ event Initialized()
 	UplinkOverride = new class'FunctionOverride';
 	UplinkOverride.Init(class'MasterServerUplink', 'BeginPlay', self, 'UplinkBeginPlay');
 
+	// Level music is started by scripts on the server, on each PlayerController, so it only ever played
+	// on the host. Send it to the joiners too. And the sound menu locks the music slider at 0 in any
+	// network game; co-op has music.
+	MusicOverride = new class'FunctionOverride';
+	MusicOverride.Init(class'ACTION_PlayMusic', 'InitActionFor', self, 'MusicInitActionFor');
+	BattleMultiOverride = new class'FunctionOverride';
+	BattleMultiOverride.Init(class'ACTION_SetBattleMusicMulti', 'InitActionFor', self, 'BattleMultiInitActionFor');
+	ForceBattleOverride = new class'FunctionOverride';
+	ForceBattleOverride.Init(class'ACTION_ForceBattleMusic', 'InitActionFor', self, 'ForceBattleInitActionFor');
+	// Saves are single player only; loading one from the co-op lobby would drop everyone.
+	LoadGameOverride = new class'FunctionOverride';
+	LoadGameOverride.Init(class'CTMenuMain', 'LoadGameSelected', self, 'MenuLoadGameSelected');
+	SoundMenuOverride = new class'FunctionOverride';
+	SoundMenuOverride.Init(class'CTSoundOptionsPCMenu', 'Refresh', self, 'SoundMenuRefresh');
+
 	Arms = new class'CoopArms';
 	Log("CoopRC: CoopConsole initialized, overrides installed");
 }
@@ -133,6 +149,92 @@ function bool BriefingInitActionFor(ScriptedController C)
 
 	CoopGame(C.Level.Game).BriefingChanged(!A.bEndBriefing);
 	return false;
+}
+
+// Menu music only plays on the Entry map; the co-op lobby is the main menu on MPCustom, so it was silent.
+simulated event ManageMenuBackgroundMusic(Menu NewMenu)
+{
+	local string Map;
+
+	if(ViewportOwner != None && ViewportOwner.Actor != None)
+		ViewportOwner.Actor.GetCurrentMapName(Map);
+
+	if(!(Left(Caps(Map), 8) == "MPCUSTOM") || NewMenu == None)
+	{
+		Super.ManageMenuBackgroundMusic(NewMenu);
+		return;
+	}
+
+	if(NewMenu.BackgroundMusic != MenuBackgroundMusic)
+	{
+		if(MenuBackgroundMusic != None)
+			StopMenuBackgroundMusic(MenuBackgroundMusic);
+
+		MenuBackgroundMusic = NewMenu.BackgroundMusic;
+
+		if(MenuBackgroundMusic != None)
+		{
+			StartMenuBackgroundMusic(MenuBackgroundMusic);
+			Log("CoopRC: lobby menu music" @ MenuBackgroundMusic @ "playing" @ IsMenuBackgroundMusicPlaying(MenuBackgroundMusic));
+		}
+	}
+}
+
+function bool MusicInitActionFor(ScriptedController C)
+{
+	local ACTION_PlayMusic A;
+	local Controller P;
+
+	A = ACTION_PlayMusic(MusicOverride.CurrentSelf);
+
+	if(CoopGame(C.Level.Game) != None)
+		CoopGame(C.Level.Game).CurrentMusic = A.Music;
+
+	for(P = C.Level.ControllerList; P != None; P = P.NextController)
+		if(CoopPlayer(P) != None && Viewport(CoopPlayer(P).Player) == None)
+			CoopPlayer(P).ClientCoopMusic(A.Music, A.OverrideFadeDefaults, A.FadeInTime, A.FadeInType, A.FadeOutTime, A.FadeOutType);
+
+	return A.InitActionFor(C);
+}
+
+function bool BattleMultiInitActionFor(ScriptedController C)
+{
+	local ACTION_SetBattleMusicMulti A;
+	local Controller P;
+
+	A = ACTION_SetBattleMusicMulti(BattleMultiOverride.CurrentSelf);
+
+	for(P = C.Level.ControllerList; P != None; P = P.NextController)
+		if(CoopPlayer(P) != None && Viewport(CoopPlayer(P).Player) == None)
+			CoopPlayer(P).ClientCoopBattleMusic(A.multiSound, false);
+
+	return A.InitActionFor(C);
+}
+
+function bool ForceBattleInitActionFor(ScriptedController C)
+{
+	local ACTION_ForceBattleMusic A;
+	local Controller P;
+
+	A = ACTION_ForceBattleMusic(ForceBattleOverride.CurrentSelf);
+
+	for(P = C.Level.ControllerList; P != None; P = P.NextController)
+		if(CoopPlayer(P) != None && Viewport(CoopPlayer(P).Player) == None)
+			CoopPlayer(P).ClientCoopBattleMusic(None, true);
+
+	return A.InitActionFor(C);
+}
+
+function SoundMenuRefresh()
+{
+	local CTSoundOptionsPCMenu M;
+
+	M = CTSoundOptionsPCMenu(SoundMenuOverride.CurrentSelf);
+
+	if(CoopPlayer(M.GetPlayerOwner()) != None)
+		M.bInMultiplayer = false;
+
+	M.Refresh();
 }
 
 function bool MovieInitActionFor(ScriptedController C)
@@ -200,6 +302,33 @@ function MenuNewGameSelected()
 	}
 
 	M.NewGameSelected();
+}
+
+function MenuLoadGameSelected()
+{
+	local CTMenuMain M;
+	local PlayerController PC;
+
+	M = CTMenuMain(LoadGameOverride.CurrentSelf);
+	PC = M.GetPlayerOwner();
+
+	// Co-op progress is the start of the last co-op level (CoopGame.LastCoopMap): continue there together.
+	if(CoopLobby(PC.Level.Game) != None)
+	{
+		if(CoopLobby(PC.Level.Game).LastCoopMap == "")
+			CoopPlayer(PC).ClientLobbyNotice("", "No co-op progress yet: use NEW GAME or CAMPAIGN MAP.");
+		else
+			CoopLobby(PC.Level.Game).StartCoop(CoopLobby(PC.Level.Game).LastCoopMap);
+		return;
+	}
+
+	if(CoopPlayer(PC) != None && PC.Level.NetMode != NM_Standalone)
+	{
+		CoopPlayer(PC).ClientLobbyNotice("", "In co-op the host picks the level.");
+		return;
+	}
+
+	M.LoadGameSelected();
 }
 
 function ControllerClientDying(class<DamageType> DamageType, vector HitLocation)

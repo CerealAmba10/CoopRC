@@ -8,7 +8,8 @@ var CoopGame Game;
 var CoopPlayer Joiner;
 var Pawn OldPawn;
 var int Step;
-var int Mode; // 1 = respawn/catch-up/wipe, 2 = level travel, 3 = spin the joiner's view, 7 = squad orders
+var int Mode; // 1 = respawn/catch-up/wipe, 2 = level travel, 3 = spin the joiner's view, 7 = squad orders,
+              // 9 = joiner places and fires the geo_01a demolition charge
 var int Spin;
 var float StepTime;
 
@@ -76,6 +77,100 @@ function TravelTest()
 		Log("CoopTest: moving joiner onto exit");
 		Joiner.Pawn.SetLocation(T.Location + vect(150, 0, 0));
 		Step++;
+	}
+}
+
+// Same aim as the joiner's, done by Boss on the host, to compare what the targeting code returns.
+function HostAimTest(Actor D, vector From)
+{
+	local CoopPlayer Host;
+	local PlayerController.ETargetType T;
+	local int i;
+
+	Host = CoopPlayer(Level.GetLocalPlayerController());
+
+	if(Host == None || Host.Pawn == None || !Host.Pawn.SetLocation(From))
+		return;
+
+	for(i = 0; i < 6; i++)
+	{
+		Host.SetRotation(rotator(D.Location + vect(0,0,8) * i - (Host.Pawn.Location + Host.Pawn.EyePosition())));
+		T = Host.SelectTargetType();
+		Log("CoopTest: host aim" @ i @ "->" @ Host.Target @ T @ "marker" @ Host.TargetMarker);
+	}
+}
+
+// Mode 9: the joiner uses the squad-only tutorial item of geo_01a (bunker charge, then its plunger),
+// geo_01b (shield terminal) or geo_01c (breach door), pressing Use on their own machine
+// (CoopPlayer.ClientTestUse) so the real client path runs: client targeting, the forwarded Use, the
+// server-side hold. Logs the item's state as it goes.
+function SquadItemTest()
+{
+	local ActivateItem D;
+	local string Map;
+	local name ItemTag;
+	local int i;
+
+	Map = Left(string(Level), InStr(string(Level), "."));
+	if(Map ~= "geo_01a")
+		ItemTag = 'DemolitionCharge';
+	else if(Map ~= "geo_01b")
+		ItemTag = 'HackTerminalEntrance';
+	else
+		ItemTag = 'BreachDoorSunFac';
+
+	ForEach AllActors(class'ActivateItem', D, ItemTag)
+		break;
+
+	if(D == None || Joiner.Pawn == None)
+		return;
+
+	if(int(StepTime) % 5 == 0)
+		Log("CoopTest: t=" $ int(StepTime) @ "step" @ Step @ D @ D.GetStateName() @ "usable" @ D.bIsUsable @ "user" @ D.User @ "joiner (server view) target" @ Joiner.Target @ Joiner.TargetType);
+
+	if(Step == 0 && StepTime >= 10 && StepTime < 11) // reach the meet-up, as if we'd walked there
+	{
+		if(ItemTag == 'DemolitionCharge')
+			TriggerEvent('ActivateDemoCharge', self, None);
+		else if(D.IsInState('Disabled'))
+			D.GotoState('Standby');
+	}
+
+	if(Step == 0 && StepTime >= 12 && D.bIsUsable)
+	{
+		// Where the level says a user stands (NavPtLocs: in front of the item, facing it); else around it.
+		if(!Joiner.Pawn.SetLocation(D.Location + (vect(85,0,0) >> D.Rotation) + vect(0,0,40)))
+			for(i = 0; i < 16 && !Joiner.Pawn.SetLocation(D.Location + 110 * vector(rot(0,1,0) * (i * 4096)) + vect(0,0,40)); i++);
+		Joiner.ClientSetLocation(Joiner.Pawn.Location, rotator(D.Location - Joiner.Pawn.Location));
+		HostAimTest(D, Joiner.Pawn.Location + vect(0,40,0));
+		Log("CoopTest: joiner moved next to" @ D @ "state" @ D.GetStateName() @ "dist" @ VSize(Joiner.Pawn.Location - D.Location));
+		Step = 1;
+		StepTime = 0;
+	}
+	else if(Step == 1 && StepTime >= 3)
+	{
+		Joiner.ClientTestUse(true, D.Location);
+		Step = 2;
+		StepTime = 0;
+	}
+	else if(Step == 2 && ((StepTime > 2 && !D.bActivating) || StepTime > 25))
+	{
+		Joiner.ClientTestUse(false, D.Location);
+		Log("CoopTest: after holding Use" @ StepTime @ "s:" @ D @ D.GetStateName());
+		Step = 3;
+		StepTime = 0;
+	}
+	else if(Step == 3 && StepTime >= 3 && ItemTag == 'DemolitionCharge')
+	{
+		Joiner.ClientTestUse(true, D.Location); // plunger
+		Step = 4;
+		StepTime = 0;
+	}
+	else if(Step == 4 && StepTime >= 6)
+	{
+		Joiner.ClientTestUse(false, D.Location);
+		Log("CoopTest: after plunger:" @ D.GetStateName());
+		Step = 5;
 	}
 }
 
@@ -218,6 +313,30 @@ function Timer()
 		return;
 	}
 
+	if(Mode == 12) // idle: just play the level, reporting every player's state
+	{
+		if(int(StepTime) % 10 == 0)
+			for(C = Level.ControllerList; C != None; C = C.NextController)
+				if(CoopPlayer(C) != None)
+					Log("CoopTest: player slot" @ CoopPlayer(C).CoopSlot @ "state" @ C.GetStateName() @ "pawn" @ C.Pawn
+						@ "class" @ C.Pawn.Class @ "weapon" @ C.Pawn.Weapon @ "pending" @ C.Pawn.PendingWeapon @ "inv" @ C.Pawn.Inventory
+						@ "view" @ CoopPlayer(C).ViewTarget @ "health" @ C.Pawn.Health);
+		return;
+	}
+
+	if(Mode == 10 || Mode == 11) // lobby, as if the host picked a level from the Campaign Map (10: the drop, 11: geo_03a)
+	{
+		if(StepTime >= 25 && Step == 0 && CoopLobby(Game) != None)
+		{
+			Step++;
+			if(Mode == 10)
+				Level.GetLocalPlayerController().ConsoleCommand("open GEO_01Briefing");
+			else
+				Level.GetLocalPlayerController().ConsoleCommand("open geo_03a");
+		}
+		return;
+	}
+
 	if(Mode >= 4 && Mode <= 6) // lobby: once the joiners are in, start New Game like the host's menu does
 	{                         // (5: skip to geo_01a, 6: start at the Geonosis briefing that follows the prologue)
 		if(StepTime >= 25 && Step == 0 && CoopLobby(Game) != None)
@@ -230,6 +349,12 @@ function Timer()
 			else
 				Game.StartCoop("PRO");
 		}
+		return;
+	}
+
+	if(Mode == 9)
+	{
+		SquadItemTest();
 		return;
 	}
 

@@ -10,6 +10,7 @@ class CoopGame extends CTGameInfoSP
 const NUM_SLOTS = 3;
 
 var class<Pawn>  SlotClass[NUM_SLOTS];  // 0 = Sev, 1 = Fixer, 2 = Scorch
+var Sound        CurrentMusic;          // last ACTION_PlayMusic track, for joiners arriving later
 var string       SlotName[NUM_SLOTS];   // value accepted by ?CoopSlot=
 var string       SlotLongName[NUM_SLOTS];
 var string       SlotWeapon[NUM_SLOTS]; // role weapon handed out on spawn, '' = none
@@ -22,6 +23,7 @@ var config float LeashDistance;  // no teammate within this range ...
 var config float LeashTime;      // ... for this many seconds -> caught up to the nearest one
 var config float WipeDelay;      // seconds with every player dead before the map restarts
 
+var config string LastCoopMap; // host's co-op progress: the last level started, continued with Load Game
 var config float ExitRadius;     // everyone who is up must be this close to the exit to travel
 
 var float CheckTime;
@@ -53,6 +55,14 @@ event InitGame(string Options, out string Error)
 	local int i;
 
 	Super.InitGame(Options, Error);
+
+	// Co-op can't save mid-level (the engine won't save a network game), so progress is the level start.
+	MapName = Left(string(Level), InStr(string(Level), "."));
+	if(CoopLobby(self) == None && !(MapName ~= "PRO") && !(MapName ~= LastCoopMap))
+	{
+		LastCoopMap = MapName;
+		SaveConfig();
+	}
 
 	if(ParseOption(Options, "CoopTest") != "")
 		Spawn(class'CoopTest').Mode = int(ParseOption(Options, "CoopTest"));
@@ -208,6 +218,10 @@ event PostLogin(PlayerController NewPlayer)
 	}
 
 	Super.PostLogin(NewPlayer);
+
+	// The level's music usually starts at load, before anyone has joined (CoopConsole.MusicInitActionFor).
+	if(CP != None && Viewport(NewPlayer.Player) == None && CurrentMusic != None)
+		CP.ClientCoopMusic(CurrentMusic, false, 0, MFT_Linear, 0, MFT_Linear);
 
 	if(bInBriefing && CoopPlayer(NewPlayer) != None && CoopPlayer(NewPlayer).CoopSlot >= 0)
 		WatchBriefing(CoopPlayer(NewPlayer));
@@ -424,6 +438,15 @@ function RestartPlayer(Controller aPlayer)
 			MoveNear(aPlayer.Pawn, Anchor);
 
 		SetArmor(aPlayer.Pawn, BossSkin);
+
+		// Boss's SP starting gear goes to the pawn that exists when the level starts. Spawned later (after
+		// waiting for the squad to link up, or on a respawn) he had nothing: no gun, nothing to use.
+		if(aPlayer.Pawn.Inventory == None)
+		{
+			aPlayer.Pawn.AddDefaultInventory();
+			LogInventory(aPlayer.Pawn);
+			aPlayer.SwitchToBestWeapon();
+		}
 		return;
 	}
 
@@ -487,6 +510,11 @@ function ClaimSlot(int Slot)
 
 		if(PlayerController(P.Controller) != None || P.Tag != SlotClass[Slot].Name || !P.bCanBeSquadMember)
 			continue;
+
+		// Out of the squad first: a destroyed member left in it crashes CTSquadNative.Tick on the next
+		// order (geo_03a's StartSearchAndDestroy with Sev and Fixer played by humans).
+		if(P.Squad != None)
+			P.Squad.RemoveFromSquad(P);
 
 		if(P.Controller != None)
 		{

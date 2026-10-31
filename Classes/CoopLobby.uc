@@ -41,6 +41,17 @@ function StartCoop(string MapName)
 	local CoopPlayer CP;
 	local int Joiners;
 
+	if(IntroMap != "") // New Game already picked (repeat clicks would reset the joiner count to 0)
+		return;
+
+	// A level picked from the Campaign Map: everyone travels there together (no local prologue).
+	if(!(MapName ~= "PRO") && !(MapName ~= "geo_01briefing"))
+	{
+		IntroMap = MapName;
+		Super.StartCoop(MapName);
+		return;
+	}
+
 	for(C = Level.ControllerList; C != None; C = C.NextController)
 	{
 		CP = CoopPlayer(C);
