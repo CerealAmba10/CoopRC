@@ -396,7 +396,7 @@ function TickIntro(float Delta)
 		}
 
 		bReconnecting = true;
-		ReconnectGiveUp = ConsoleTime + 180;
+		ReconnectGiveUp = ConsoleTime + 600; // the host may load much slower than us
 		ReconnectTime = ConsoleTime + 10; // give the host time to leave the lobby and load Geonosis
 	}
 

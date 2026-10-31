@@ -313,7 +313,23 @@ function Timer()
 		return;
 	}
 
-	if(Mode == 12) // idle: just play the level, reporting every player's state
+	if(Mode == 13) // like 12 over a laggy connection, and the first joiner dies once
+	{
+		if(Step == 0)
+		{
+			Log("CoopTest: server lag ->" @ Level.GetLocalPlayerController().ConsoleCommand("PKTLAG 250")
+				@ Level.GetLocalPlayerController().ConsoleCommand("PKTLOSS 5"));
+			Step = 1;
+		}
+		if(Step == 1 && StepTime >= 60 && Joiner.Pawn != None)
+		{
+			Log("CoopTest: killing" @ Joiner.CoopSlot);
+			Kill(Joiner.Pawn);
+			Step = 2;
+		}
+	}
+
+	if(Mode == 12 || Mode == 13) // idle: just play the level, reporting every player's state
 	{
 		if(int(StepTime) % 10 == 0)
 			for(C = Level.ControllerList; C != None; C = C.NextController)

@@ -10,7 +10,8 @@ class CoopGame extends CTGameInfoSP
 const NUM_SLOTS = 3;
 
 var class<Pawn>  SlotClass[NUM_SLOTS];  // 0 = Sev, 1 = Fixer, 2 = Scorch
-var Sound        CurrentMusic;          // last ACTION_PlayMusic track, for joiners arriving later
+var Sound        CurrentMusic;
+var string       OptionsSeen;           // this level's URL options (CoopTest checks)          // last ACTION_PlayMusic track, for joiners arriving later
 var string       SlotName[NUM_SLOTS];   // value accepted by ?CoopSlot=
 var string       SlotLongName[NUM_SLOTS];
 var string       SlotWeapon[NUM_SLOTS]; // role weapon handed out on spawn, '' = none
@@ -55,6 +56,7 @@ event InitGame(string Options, out string Error)
 	local int i;
 
 	Super.InitGame(Options, Error);
+	OptionsSeen = Options;
 
 	// Co-op can't save mid-level (the engine won't save a network game), so progress is the level start.
 	MapName = Left(string(Level), InStr(string(Level), "."));
@@ -69,7 +71,7 @@ event InitGame(string Options, out string Error)
 
 	// Link-up after the prologue: Boss waits here until this many friends have connected.
 	WaitForJoiners = int(ParseOption(Options, "CoopWait"));
-	WaitDeadline = Level.TimeSeconds + 120;
+	WaitDeadline = Level.TimeSeconds + 240;
 
 	KeepUnreplicableActorsOnServer();
 	FixReplicatedLooks();
@@ -225,6 +227,9 @@ event PostLogin(PlayerController NewPlayer)
 
 	if(bInBriefing && CoopPlayer(NewPlayer) != None && CoopPlayer(NewPlayer).CoopSlot >= 0)
 		WatchBriefing(CoopPlayer(NewPlayer));
+
+	if(CP != None && Viewport(NewPlayer.Player) == None && InStr(Caps(OptionsSeen), "COOPTEST=13") >= 0)
+		CP.ClientTestLag(250); // CoopTest 13: every joiner on a laggy connection from the start
 }
 
 function bool WaitingForSquad()
@@ -301,6 +306,8 @@ function BriefingChanged(bool bStart)
 		if(CP == None || CP.CoopSlot < 0)
 			continue;
 
+		CP.bCoopWatching = false;
+
 		if(bStart)
 		{
 			WatchBriefing(CP);
@@ -309,6 +316,7 @@ function BriefingChanged(bool bStart)
 		{
 			CP.SetViewTarget(CP.Pawn);
 			CP.ClientSetViewTarget(CP.Pawn);
+			CP.ViewSync = 5;
 		}
 		else
 		{
@@ -338,6 +346,7 @@ function WatchBriefing(CoopPlayer CP)
 	if(Target == None)
 		return;
 
+	CP.bCoopWatching = true;
 	CP.SetViewTarget(Target);
 	CP.ClientSetViewTarget(Target);
 	CP.ClientSetBehindView(false);
@@ -490,6 +499,8 @@ function RestartPlayer(Controller aPlayer)
 	// Kit after Possess: Weapon.GiveTo needs the owning controller to tell the client which weapon is up.
 	GivePlayerKit(P, CP.CoopSlot);
 	CP.SwitchToBestWeapon();
+	CP.ViewSync = 5;
+	CP.bCoopWatching = false;
 }
 
 // Only the squad version (standard Commando##Delta tag, bCanBeSquadMember) is removed. Cinematic-only
@@ -692,6 +703,15 @@ event Tick(float Delta)
 
 		if(C.Pawn != None && C.Pawn.Health > 0)
 			bAnyAlive = true;
+
+		// Back to their own eyes after a spawn or a briefing. ClientSetViewTarget is lost when it reaches
+		// the client before the new pawn does (joiners kept looking through Boss's eyes), so repeat it.
+		if(CP.ViewSync > 0 && !bInBriefing && CP.Pawn != None && CP.CoopSlot >= 0)
+		{
+			CP.ViewSync--;
+			CP.SetViewTarget(CP.Pawn);
+			CP.ClientSetViewTarget(CP.Pawn);
+		}
 
 		// Respawn next to a teammate instead of the SP "load last save". Also retries joiners whose
 		// first spawn had to wait for a teammate on the ground.

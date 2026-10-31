@@ -11,14 +11,20 @@ var ETargetType ServerPanelType;
 var bool bItemsUnlocked;       // UnlockSquadItems ran for this level
 var Actor LoggedTarget;        // client: last usable item reported in the log
 var ETargetType LoggedTargetType;
+var bool bCoopWatching;        // server -> owner: watching a briefing through someone else's eyes
+var int ViewSync;
+var float ResyncTime;
+var float StatusLogTime;        // client: next periodic status line in the log (for bug reports)           // client: time without a live pawn of our own, see PlayerTick              // server: seconds left re-sending the view to the own pawn (CoopGame.Tick)
 
 
 replication
 {
 	reliable if(Role == ROLE_Authority)
-		ClientShowMenu, ClientPlayMovie, ClientStartIntro, ClientLobbyNotice, ClientTestSquadOrder, ClientEnsureProfile, ClientTestUse, ClientCoopMusic, ClientCoopBattleMusic;
+		ClientShowMenu, ClientPlayMovie, ClientStartIntro, ClientLobbyNotice, ClientTestSquadOrder, ClientEnsureProfile, ClientTestUse, ClientCoopMusic, ClientCoopBattleMusic, ClientTestLag;
 	reliable if(Role < ROLE_Authority)
-		ServerCatchUp, ServerCoopUse, ServerCoopStopUse;
+		ServerCatchUp, ServerCoopUse, ServerCoopStopUse, ServerCoopResync;
+	reliable if(bNetOwner && Role == ROLE_Authority)
+		bCoopWatching;
 }
 
 // The targeting/marker code (native, runs on the client every tick) assumes the pawn has a squad.
@@ -46,6 +52,43 @@ event PlayerTick(float DeltaTime)
 
 	if(Role < ROLE_Authority)
 	{
+		// Over the internet the server's "here's your new pawn" (ClientRestart, ClientSetViewTarget) can
+		// arrive before the pawn itself, and is then lost: joiners kept looking through Boss's eyes after
+		// the link-up, or stayed on a white death screen after respawning. Once our pawn is here, take it.
+		if(Pawn != None && Pawn.Health > 0 && !bCoopWatching
+			&& (ViewTarget != Pawn || IsInState('Dead') || IsInState('WaitingForPawn') || IsInState('Spectating')))
+		{
+			Log("CoopRC: taking over own pawn (state" @ GetStateName() $ ", view" @ ViewTarget $ ")");
+			ClientRestart(Pawn);
+		}
+
+		// Still nothing to play after a while (not watching a briefing, no live pawn): ask the server to
+		// send it all again. Repeats every few seconds until we have one.
+		if(!bCoopWatching && (Pawn == None || Pawn.Health <= 0))
+		{
+			ResyncTime += DeltaTime;
+
+			if(ResyncTime > 6)
+			{
+				ResyncTime = 0;
+				ServerCoopResync();
+			}
+		}
+		else
+			ResyncTime = 0;
+
+		if(Level.TimeSeconds >= StatusLogTime)
+		{
+			StatusLogTime = Level.TimeSeconds + 10;
+			if(Pawn != None)
+				Log("CoopRC: status" @ GetStateName() @ "pawn" @ Pawn @ "at" @ Pawn.Location @ "physics" @ Pawn.Physics @ "health" @ Pawn.Health
+					@ "view" @ ViewTarget @ "at" @ ViewTarget.Location @ "behind" @ bBehindView @ "watching" @ bCoopWatching
+					@ "fx add" @ ColorAdd.R @ CurrentAddStage @ "blur" @ Blur @ "bloom" @ Bloom @ "mult" @ ColorMultiply.R
+					@ "fade" @ Helmet.FadeTime @ Helmet.ElapsedFadeTime @ Helmet.FadeColor.R @ Helmet.FadeColor.A @ "menu" @ Player.Console.CurMenu);
+			else
+				Log("CoopRC: status" @ GetStateName() @ "no pawn, view" @ ViewTarget @ "watching" @ bCoopWatching);
+		}
+
 		ClientTargetTick(DeltaTime);
 		ClientUsableTarget();
 
@@ -137,6 +180,45 @@ simulated function ClientTestUse(bool bDown, vector AimAt)
 		Use();
 	else
 		StopUse();
+}
+
+// Dying starts a white visor flash, bloom and blur that last 15 seconds (PlayerController state Dead). In
+// SP the level reloads; a co-op respawn came back under a white screen. Clear them with the new pawn.
+function ClientRestart(Pawn NewPawn)
+{
+	local color Black;
+
+	Super.ClientRestart(NewPawn);
+
+	if(Pawn != None && Pawn.Health > 0)
+	{
+		BlendInAddColor(Black, 0.3, 0, 0);
+		AnimateBlur(0, 0.3, 0, 0);
+		AnimateBloomFilter(0, 0.3, 0, 0);
+
+		// The death visor fade holds the screen white (Helmet.FadeColor white, fade done); a negative
+		// time fades back from it, as levels do.
+		if(Helmet != None && Helmet.FadeColor.R == 255 && Helmet.FadeColor.G == 255 && Helmet.FadeColor.B == 255 && Helmet.FadeTime >= 0)
+			StartScreenFade(-0.5, Helmet.FadeColor);
+	}
+}
+
+// A client that has gone a while without a pawn of its own asks again (see PlayerTick).
+function ServerCoopResync()
+{
+	if(Pawn != None && Pawn.Health > 0)
+	{
+		Log("CoopRC:" @ PlayerReplicationInfo.PlayerName @ "asked for a resync, resending pawn" @ Pawn);
+		ClientRestart(Pawn);
+		ClientSetViewTarget(Pawn);
+		ClientSetBehindView(false);
+	}
+}
+
+// CoopTest: simulate an internet connection (Engine's packet lag emulation) on this client.
+simulated function ClientTestLag(int Milliseconds)
+{
+	Log("CoopRC: test lag" @ Milliseconds @ "->" @ ConsoleCommand("PKTLAG" @ Milliseconds) @ ConsoleCommand("PKTLOSS 5"));
 }
 
 // Charges, hack panels and plungers (ActivateItems) are used in CTPlayer.Use, which only runs where the

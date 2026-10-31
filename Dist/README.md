@@ -42,7 +42,7 @@ Everyone needs Steam running (the Steam relay connects you; no port forwarding o
    If a relay hits a problem its window stays open with the reason, also saved as `Relay\CoopRelay-join.log`
    (or `-host.log`). Send that file when asking for help.
 3. **Host picks NEW GAME.** Everyone plays the Kamino prologue on their own PC. At Geonosis the squad links
-   up automatically (Boss waits until everyone is in, up to 2 minutes), and the campaign continues together.
+   up automatically (Boss waits until everyone is in, up to 4 minutes), and the campaign continues together.
 
 Other ways in:
 - `Host-Coop.bat geo_03a` starts straight at a level (map files are in `GameData\Maps`); friends can join
