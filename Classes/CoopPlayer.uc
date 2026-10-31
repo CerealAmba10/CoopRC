@@ -4,7 +4,11 @@ class CoopPlayer extends CTPlayer;
 var int CoopSlot; // -1 = host (Boss), otherwise index into CoopGame's slots
 var string RequestedSlot;     // ?CoopSlot= from the join URL
 var float LobbyMenuTime;      // CoopLobby: when to open the main menu for this player
-var float DeadTime, AloneTime; // server-side, see CoopGame.Tick
+var float DeadTime, AloneTime, DownTime;
+var bool bGiveUp;
+var bool bWasDowned;
+var Pawn ReviveTarget;          // server: the downed player a joiner is reviving, see ServerCoopRevive
+var float ReviveTime;           // server: downed last tick, see CoopGame.TickDowned              // server: downed player pressed Fire to respawn // server-side, see CoopGame.Tick
 var Squad LocalSquad;          // client-side only, see PlayerTick
 var ActivateItem ServerPanel;  // server-side: the charge/panel a joiner is holding Use on, see ServerCoopUse
 var ETargetType ServerPanelType;
@@ -20,9 +24,9 @@ var float StatusLogTime;        // client: next periodic status line in the log 
 replication
 {
 	reliable if(Role == ROLE_Authority)
-		ClientShowMenu, ClientPlayMovie, ClientStartIntro, ClientLobbyNotice, ClientTestSquadOrder, ClientEnsureProfile, ClientTestUse, ClientCoopMusic, ClientCoopBattleMusic, ClientTestLag;
+		ClientShowMenu, ClientPlayMovie, ClientStartIntro, ClientLobbyNotice, ClientTestSquadOrder, ClientEnsureProfile, ClientTestUse, ClientCoopMusic, ClientCoopBattleMusic, ClientTestLag, ClientResetPawn;
 	reliable if(Role < ROLE_Authority)
-		ServerCatchUp, ServerCoopUse, ServerCoopStopUse, ServerCoopResync;
+		ServerCatchUp, ServerCoopUse, ServerCoopStopUse, ServerCoopResync, ServerCoopGiveUp, ServerCoopRevive;
 	reliable if(bNetOwner && Role == ROLE_Authority)
 		bCoopWatching;
 }
@@ -55,8 +59,9 @@ event PlayerTick(float DeltaTime)
 		// Over the internet the server's "here's your new pawn" (ClientRestart, ClientSetViewTarget) can
 		// arrive before the pawn itself, and is then lost: joiners kept looking through Boss's eyes after
 		// the link-up, or stayed on a white death screen after respawning. Once our pawn is here, take it.
-		if(Pawn != None && Pawn.Health > 0 && !bCoopWatching
-			&& (ViewTarget != Pawn || IsInState('Dead') || IsInState('WaitingForPawn') || IsInState('Spectating')))
+		if(Pawn != None && Pawn.Health > 0 && !Pawn.bIncapacitated && !bCoopWatching
+			&& (ViewTarget != Pawn || IsInState('Dead') || IsInState('WaitingForPawn') || IsInState('Spectating')
+				|| IsInState('CtrlIncapacitated'))) // revived on the server: PawnRevived only ran there
 		{
 			Log("CoopRC: taking over own pawn (state" @ GetStateName() $ ", view" @ ViewTarget $ ")");
 			ClientRestart(Pawn);
@@ -64,7 +69,7 @@ event PlayerTick(float DeltaTime)
 
 		// Still nothing to play after a while (not watching a briefing, no live pawn): ask the server to
 		// send it all again. Repeats every few seconds until we have one.
-		if(!bCoopWatching && (Pawn == None || Pawn.Health <= 0))
+		if(!bCoopWatching && (Pawn == None || (Pawn.Health <= 0 && !Pawn.bIncapacitated)))
 		{
 			ResyncTime += DeltaTime;
 
@@ -91,6 +96,7 @@ event PlayerTick(float DeltaTime)
 
 		ClientTargetTick(DeltaTime);
 		ClientUsableTarget();
+		TargetDownedFriend();
 
 		if(Target != LoggedTarget || (ActivateItem(Target) != None && TargetType != LoggedTargetType))
 		{
@@ -105,6 +111,9 @@ event PlayerTick(float DeltaTime)
 	else
 	{
 		Super.PlayerTick(DeltaTime);
+
+		if(Viewport(Player) != None) // the host's own targeting
+			TargetDownedFriend();
 
 		// Keep the joiner aimed at what they're working on: the item only progresses while its user is
 		// holding Use on a panel (ActivateItem.BeginActivating).
@@ -153,6 +162,42 @@ simulated function ClientUsableTarget()
 		TargetType = TGT_Panel;
 }
 
+// The targeting code only offers downed squadmates for a revive, and the humans aren't in Boss's squad (and
+// a client isn't told about squads at all): offer a downed player we're looking at, close by.
+simulated function TargetDownedFriend()
+{
+	local Pawn P, Best;
+	local vector Eye, Dir;
+	local float Dist, BestDist;
+
+	if(Pawn == None || Pawn.bIncapacitated || (Target != None && TargetType != TGT_Default))
+		return;
+
+	Eye = Pawn.Location + Pawn.EyePosition();
+	Dir = vector(Rotation);
+	BestDist = 200;
+
+	ForEach DynamicActors(class'Pawn', P)
+	{
+		if(P == Pawn || !P.bIncapacitated || !P.IsA('PlayerCommando'))
+			continue;
+
+		Dist = VSize(P.Location - Eye);
+
+		if(Dist < BestDist && Normal(P.Location - Eye) dot Dir > 0.7)
+		{
+			Best = P;
+			BestDist = Dist;
+		}
+	}
+
+	if(Best != None)
+	{
+		Target = Best;
+		TargetType = TGT_FriendToHeal;
+	}
+}
+
 // CoopTest mode 9: look at AimAt and press (or release) Use on the joiner's own machine, as the player would.
 simulated function ClientTestUse(bool bDown, vector AimAt)
 {
@@ -166,10 +211,11 @@ simulated function ClientTestUse(bool bDown, vector AimAt)
 			TargetLastUpdated = 0;
 			ClientTargetTick(0);
 			ClientUsableTarget();
+			TargetDownedFriend();
 
 			Log("CoopRC: test aim" @ i @ "from" @ Pawn.Location @ "dist" @ VSize(AimAt - Pawn.Location) @ "->" @ Target @ TargetType);
 
-			if(TargetType == TGT_Panel || TargetType == TGT_DemolitionReady)
+			if(TargetType == TGT_Panel || TargetType == TGT_DemolitionReady || TargetType == TGT_FriendToHeal)
 				break;
 		}
 	}
@@ -192,6 +238,7 @@ function ClientRestart(Pawn NewPawn)
 
 	if(Pawn != None && Pawn.Health > 0)
 	{
+		RaiseWeapon(Pawn);
 		BlendInAddColor(Black, 0.3, 0, 0);
 		AnimateBlur(0, 0.3, 0, 0);
 		AnimateBloomFilter(0, 0.3, 0, 0);
@@ -215,6 +262,35 @@ function ServerCoopResync()
 	}
 }
 
+// Being downed put the gun away (Disarm: PutDown, remembered as OldWeapon); bring that same gun back up.
+// "Switch to last weapon" would be a switch to the gun already in hand, which does nothing.
+simulated function RaiseWeapon(Pawn P)
+{
+	if(P.Weapon != None)
+	{
+		if(P.Weapon.IsInState('DownWeapon') || P.Weapon.IsInState('') )
+			P.Weapon.BringUp(None);
+	}
+	else if(P.OldWeapon != None)
+		P.SwitchToLastWeapon();
+	else if(P.Controller == self)
+		SwitchToBestWeapon();
+}
+
+// A revived player's pawn stood back up: our copy of it can still be in the downed pose.
+simulated function ClientResetPawn(Pawn P)
+{
+	if(P == None)
+		return;
+
+	P.SetRotation(rot(0,1,0) * P.Rotation.Yaw);
+	P.bPlayedDeath = false;
+	P.ChangeAnimation();
+
+	if(P == Pawn)
+		RaiseWeapon(P);
+}
+
 // CoopTest: simulate an internet connection (Engine's packet lag emulation) on this client.
 simulated function ClientTestLag(int Milliseconds)
 {
@@ -230,6 +306,8 @@ exec function Use()
 {
 	if(Role < ROLE_Authority && ActivateItem(Target) != None && (TargetType == TGT_Panel || TargetType == TGT_DemolitionReady))
 		ServerCoopUse(ActivateItem(Target), Target.Location, TargetType);
+	else if(Role < ROLE_Authority && Pawn(Target) != None && TargetType == TGT_FriendToHeal)
+		ServerCoopRevive(Pawn(Target));
 
 	Super.Use();
 }
@@ -266,24 +344,105 @@ function ServerCoopUse(ActivateItem Item, vector ItemLocation, ETargetType Type)
 	if(Found.ActivateItemType == AIT_Plunger) // an armed charge: the client can't tell it from an unplaced one
 		Type = TGT_DemolitionReady;
 
+	// What CTPlayer.Use and the hand signal do to the item, without CTPlayer.Use itself: it puts this
+	// controller into state UsingItem, and the server's position corrections carry its state to the
+	// client, which then sat in UsingItem with Use released and crashed (assert(bUse), e.g. on bacta).
+	if(Type == TGT_DemolitionReady)
+	{
+		if(Found.ActivateItemType == AIT_Plunger)
+			Found.GotoState('Explode');
+		return;
+	}
+
+	if(!Found.bIsUsable || Found.bActivating)
+		return;
+
+	if(Found.ActivateItemType == AIT_BactaDispenser && Pawn.Health >= Pawn.MaxHealth)
+		return;
+
 	ServerPanel = Found;
 	ServerPanelType = Type;
 	Target = Found;
 	TargetType = Type;
-	Use();
-
-	// Locally the hand signal animation starts the item (HandSignal.HolsterAttachment) or fires the plunger
-	// (HandSignal.FireWeapon); the server doesn't animate a remote player's hands, so do it here.
-	if(Type == TGT_Panel && Found.bIsUsable && !Found.bActivating)
-		Found.StartSetup(self);
-	else if(Type == TGT_DemolitionReady && Found.ActivateItemType == AIT_Plunger)
-		Found.GotoState('Explode');
+	bUse = true; // the item keeps going while its user holds Use (ActivateItem.BeginActivating)
+	Found.bPlayerActivated = true;
+	Found.bUsed = true;
+	TriggerEvent(Found.EventUnderway, Found, Pawn);
+	Found.StartSetup(self);
 }
 
 function ServerCoopStopUse()
 {
 	ServerPanel = None;
-	StopUse();
+	bUse = false;
+}
+
+// Healing is timed on the reviver's machine (CTPlayer.UsingItem), where the server's state corrections keep
+// interrupting a joiner's. Time it here instead (PlayerTick) while they hold Use.
+function ServerCoopRevive(Pawn P)
+{
+	Log("CoopRC:" @ PlayerReplicationInfo.PlayerName @ "starts reviving" @ P @ "downed" @ P.bIncapacitated @ "dist" @ VSize(P.Location - Pawn.Location) @ "time" @ TotalTimeToRevive);
+
+	if(P == None || Pawn == None || P == Pawn || !P.bIncapacitated || VSize(P.Location - Pawn.Location) > 250)
+		return;
+
+	ReviveTarget = P;
+	ReviveTime = 0;
+	bUse = true;
+}
+
+// Called every frame by CoopGame.Tick (a remote player's controller doesn't tick PlayerTick on the server).
+function TickRevive(float DeltaTime)
+{
+	if(!bUse || Pawn == None || !ReviveTarget.bIncapacitated || VSize(ReviveTarget.Location - Pawn.Location) > 250)
+	{
+		Log("CoopRC: revive stopped after" @ ReviveTime @ "s (use" @ bUse $ ")");
+		ReviveTarget = None;
+		return;
+	}
+
+	ReviveTime += DeltaTime;
+
+	if(ReviveTime >= 2.5) // about the bacta revive animation; TotalTimeToRevive is 0
+	{
+		Log("CoopRC:" @ PlayerReplicationInfo.PlayerName @ "revived" @ ReviveTarget);
+		ServerRevive(ReviveTarget);
+		ReviveTarget = None;
+	}
+}
+
+function ServerCoopGiveUp()
+{
+	bGiveUp = true;
+}
+
+// Downed: Fire gives up and respawns next to a teammate (CoopGame.TickDowned).
+state CtrlIncapacitated
+{
+	exec function Fire(optional float F)
+	{
+		ServerCoopGiveUp();
+	}
+
+	exec function AltFire(optional float F)
+	{
+		ServerCoopGiveUp();
+	}
+}
+
+// Never sit in UsingItem with Use released (CTPlayer asserts on it). Belt and braces for the above.
+state UsingItem
+{
+	event PlayerTick(float DeltaTime)
+	{
+		if(!bUse)
+		{
+			GotoState('PlayerWalking');
+			return;
+		}
+
+		Super.PlayerTick(DeltaTime);
+	}
 }
 
 // The friend/foe check the crosshair runs on whatever you aim at (native Pawn.GetRelationTowards)

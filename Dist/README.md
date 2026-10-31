@@ -57,9 +57,11 @@ Other ways in:
 - **The squad stays together.** Joiners and respawns appear next to a teammate. The opening meet-ups
   are skipped for human-played commandos. If you have no teammate within range for 20 seconds (for
   example, a door closed behind the others) you're moved to the nearest one. Press **K** to do it now.
-- **Down and out:** downed players can be revived with bacta as usual. A dead player respawns next to
-  a teammate after a few seconds, or press fire. If the whole squad dies, the level restarts and
-  everyone stays connected. Save/load is single player only.
+- **Down and out:** lethal damage downs you instead of killing you. Any player can revive you: look at you
+  and hold **Use** (the prompt shows). If nobody does, you bleed out after 60 seconds (10 if nobody is left
+  standing who could), or press **Fire** to give up; either way you respawn next to a teammate a few seconds
+  later. If every player is down or dead at once, the level restarts and everyone stays connected.
+  Save/load is single player only (co-op continues from the start of the last level, see Load Game).
 - **Cutscenes:** in-level cutscenes (briefings) play for everyone: joiners watch through their own commando when
   it's in the scene (e.g. Sev's intro), otherwise through Boss, then take over where it ends. Movies
   play for everyone.

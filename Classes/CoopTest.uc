@@ -112,7 +112,9 @@ function SquadItemTest()
 	local int i;
 
 	Map = Left(string(Level), InStr(string(Level), "."));
-	if(Map ~= "geo_01a")
+	if(Mode == 14) // a bacta dispenser, used by a hurt joiner
+		ItemTag = 'BactaDispenserGEO';
+	else if(Map ~= "geo_01a")
 		ItemTag = 'DemolitionCharge';
 	else if(Map ~= "geo_01b")
 		ItemTag = 'HackTerminalEntrance';
@@ -138,6 +140,8 @@ function SquadItemTest()
 
 	if(Step == 0 && StepTime >= 12 && D.bIsUsable)
 	{
+		if(Mode == 14)
+			Joiner.Pawn.Health = 40;
 		// Where the level says a user stands (NavPtLocs: in front of the item, facing it); else around it.
 		if(!Joiner.Pawn.SetLocation(D.Location + (vect(85,0,0) >> D.Rotation) + vect(0,0,40)))
 			for(i = 0; i < 16 && !Joiner.Pawn.SetLocation(D.Location + 110 * vector(rot(0,1,0) * (i * 4096)) + vect(0,0,40)); i++);
@@ -156,7 +160,7 @@ function SquadItemTest()
 	else if(Step == 2 && ((StepTime > 2 && !D.bActivating) || StepTime > 25))
 	{
 		Joiner.ClientTestUse(false, D.Location);
-		Log("CoopTest: after holding Use" @ StepTime @ "s:" @ D @ D.GetStateName());
+		Log("CoopTest: after holding Use" @ StepTime @ "s:" @ D @ D.GetStateName() @ "joiner health" @ Joiner.Pawn.Health);
 		Step = 3;
 		StepTime = 0;
 	}
@@ -171,6 +175,106 @@ function SquadItemTest()
 		Joiner.ClientTestUse(false, D.Location);
 		Log("CoopTest: after plunger:" @ D.GetStateName());
 		Step = 5;
+	}
+}
+
+function Down(Pawn P)
+{
+	if(P != None)
+		P.TakeDamage(P.Health + 100, None, P.Location, vect(0,0,0), class'DamageType');
+}
+
+function LogDowned(string What, CoopPlayer CP)
+{
+	if(CP.Pawn == None)
+		Log("CoopTest:" @ What @ "slot" @ CP.CoopSlot @ "no pawn, state" @ CP.GetStateName());
+	else
+		Log("CoopTest:" @ What @ "slot" @ CP.CoopSlot @ "downed" @ CP.Pawn.bIncapacitated @ "cannotdie" @ CP.Pawn.bCannotDie @ "bleed" @ CP.Pawn.BleedOutTime @ "health" @ CP.Pawn.Health
+			@ "pawn state" @ CP.Pawn.GetStateName() @ "controller" @ CP.GetStateName() @ "weapon" @ CP.Pawn.Weapon @ "weapon state" @ CP.Pawn.Weapon.GetStateName()
+			@ "anim" @ CP.Pawn.AnimAction);
+}
+
+// Mode 15 (geo_01a): downed handling. Host revives the joiner; the joiner revives the host with bacta from
+// their own machine; the joiner gives up and respawns.
+function DownedTest()
+{
+	local CoopPlayer Host;
+
+	Host = CoopPlayer(Level.GetLocalPlayerController());
+
+	if(Host == None || Host.Pawn == None && Step != 5)
+		return;
+
+	if(Step >= 2 && Step <= 4)
+		LogDowned("t" $ int(StepTime) @ "host", Host);
+
+	switch(Step)
+	{
+	case 0:
+		if(StepTime >= 12 && Joiner.Pawn != None)
+		{
+			LogDowned("before:", Joiner);
+			LogDowned("before:", Host);
+			Down(Joiner.Pawn);
+			LogDowned("joiner downed:", Joiner);
+			Step++; StepTime = 0;
+		}
+		break;
+	case 1:
+		if(StepTime >= 4)
+		{
+			// what Boss's targeting offers when he looks at the downed joiner
+			Host.Pawn.SetLocation(Joiner.Pawn.Location + vect(90,0,40));
+			Host.SetRotation(rotator(Joiner.Pawn.Location - (Host.Pawn.Location + Host.Pawn.EyePosition())));
+			Host.Target = None;
+			Host.TargetType = TGT_Default;
+			Host.TargetDownedFriend();
+			Log("CoopTest: host looking at the downed joiner ->" @ Host.Target @ Host.TargetType);
+			Host.ServerRevive(Joiner.Pawn);
+			Step++; StepTime = 0;
+		}
+		break;
+	case 2:
+		if(StepTime >= 8)
+		{
+			LogDowned("after host revive:", Joiner);
+			Down(Host.Pawn);
+			LogDowned("host downed:", Host);
+			Joiner.Pawn.SetLocation(Host.Pawn.Location + vect(70,0,40));
+			Joiner.ClientSetLocation(Joiner.Pawn.Location, rotator(Host.Pawn.Location - Joiner.Pawn.Location));
+			Step++; StepTime = 0;
+		}
+		break;
+	case 3:
+		if(StepTime >= 3)
+		{
+			Joiner.ClientTestUse(true, Host.Pawn.Location);
+			Step++; StepTime = 0;
+		}
+		break;
+	case 4:
+		if(StepTime >= 12 || !Host.Pawn.bIncapacitated)
+		{
+			Joiner.ClientTestUse(false, Host.Pawn.Location);
+			LogDowned("after joiner revive (" $ StepTime $ "s):", Host);
+			Down(Joiner.Pawn);
+			Step++; StepTime = 0;
+		}
+		break;
+	case 5:
+		if(StepTime >= 3 && Joiner.Pawn != None && Joiner.Pawn.bIncapacitated)
+		{
+			Joiner.ServerCoopGiveUp();
+			Step++; StepTime = 0;
+		}
+		break;
+	case 6:
+		if(StepTime >= 12)
+		{
+			LogDowned("after give up:", Joiner);
+			Step++;
+		}
+		break;
 	}
 }
 
@@ -368,7 +472,13 @@ function Timer()
 		return;
 	}
 
-	if(Mode == 9)
+	if(Mode == 15)
+	{
+		DownedTest();
+		return;
+	}
+
+	if(Mode == 9 || Mode == 14)
 	{
 		SquadItemTest();
 		return;

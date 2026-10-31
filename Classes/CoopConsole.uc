@@ -15,7 +15,7 @@ var FunctionOverride MovieOverride;
 var FunctionOverride MovieTickOverride;
 var FunctionOverride NewGameOverride;
 var FunctionOverride UplinkOverride;
-var FunctionOverride MusicOverride, BattleMultiOverride, ForceBattleOverride, SoundMenuOverride, LoadGameOverride;
+var FunctionOverride MusicOverride, BattleMultiOverride, ForceBattleOverride, SoundMenuOverride, LoadGameOverride, BleedOutOverride;
 var CoopArms         Arms;
 
 var bool   bIntroActive, bIntroHost, bReconnecting;
@@ -86,6 +86,11 @@ event Initialized()
 	BattleMultiOverride.Init(class'ACTION_SetBattleMusicMulti', 'InitActionFor', self, 'BattleMultiInitActionFor');
 	ForceBattleOverride = new class'FunctionOverride';
 	ForceBattleOverride.Init(class'ACTION_ForceBattleMusic', 'InitActionFor', self, 'ForceBattleInitActionFor');
+	// SP bleeds Boss out at once when no AI squadmate can revive him (e.g. geo_01a's start); in co-op a
+	// human can, so CoopGame.TickDowned decides when a downed player dies.
+	BleedOutOverride = new class'FunctionOverride';
+	BleedOutOverride.Init(class'Pawn', 'BleedOut', self, 'PawnBleedOut');
+
 	// Saves are single player only; loading one from the co-op lobby would drop everyone.
 	LoadGameOverride = new class'FunctionOverride';
 	LoadGameOverride.Init(class'CTMenuMain', 'LoadGameSelected', self, 'MenuLoadGameSelected');
@@ -302,6 +307,18 @@ function MenuNewGameSelected()
 	}
 
 	M.NewGameSelected();
+}
+
+function PawnBleedOut()
+{
+	local Pawn P;
+
+	P = Pawn(BleedOutOverride.CurrentSelf);
+
+	if(CoopGame(P.Level.Game) != None && CoopPlayer(P.Controller) != None && CoopGame(P.Level.Game).SomeoneElseUp(P.Controller))
+		return;
+
+	P.BleedOut();
 }
 
 function MenuLoadGameSelected()

@@ -23,6 +23,8 @@ var config float RespawnDelay;   // seconds dead before respawning next to a tea
 var config float LeashDistance;  // no teammate within this range ...
 var config float LeashTime;      // ... for this many seconds -> caught up to the nearest one
 var config float WipeDelay;      // seconds with every player dead before the map restarts
+var config float BleedOutTime;   // seconds downed without a revive before dying (and respawning)
+var config float BleedOutAlone;  // ... when nobody is left who could revive you
 
 var config string LastCoopMap; // host's co-op progress: the last level started, continued with Load Game
 var config float ExitRadius;     // everyone who is up must be this close to the exit to travel
@@ -499,6 +501,7 @@ function RestartPlayer(Controller aPlayer)
 	// Kit after Possess: Weapon.GiveTo needs the owning controller to tell the client which weapon is up.
 	GivePlayerKit(P, CP.CoopSlot);
 	CP.SwitchToBestWeapon();
+	P.bCannotDie = true; // like Boss: lethal damage downs you (to be revived) instead of killing you
 	CP.ViewSync = 5;
 	CP.bCoopWatching = false;
 }
@@ -553,6 +556,78 @@ function Killed(Controller Killer, Controller Killed, Pawn KilledPawn, class<Dam
 
 //=============================================================================
 // Squad cohesion: respawn, catch-up, wipe
+
+// Downed: a squadmate revives you with bacta. Nobody is stuck down forever: bleed out after BleedOutTime
+// (or BleedOutAlone if nobody could revive you: joiners only get revived by humans, Boss also by his AI),
+// or press Fire to give up; either way you respawn next to a teammate.
+function TickDowned(CoopPlayer CP)
+{
+	local bool bCanBeRevived;
+
+	if(CP.Pawn == None || !CP.Pawn.bIncapacitated)
+	{
+		// Just got back up: everyone's copy of the pawn can be left in the downed pose. Stand it up.
+		if(CP.bWasDowned && CP.Pawn != None && CP.Pawn.Health > 0)
+			ResetRevivedPawn(CP.Pawn);
+
+		CP.bWasDowned = false;
+		CP.DownTime = 0;
+		CP.bGiveUp = false;
+		return;
+	}
+
+	CP.bWasDowned = true;
+
+	if(CP.DownTime == 0)
+		CP.ClientMessage("You're down. A squadmate can revive you with bacta, or press FIRE to respawn next to them.");
+
+	CP.DownTime += 1.0;
+
+	bCanBeRevived = SomeoneElseUp(CP);
+
+	if(CP.CoopSlot < 0 && CP.SquadHasAI())
+		bCanBeRevived = true;
+
+	if(CP.DownTime >= BleedOutTime || (!bCanBeRevived && CP.DownTime >= BleedOutAlone) || (CP.bGiveUp && CP.DownTime >= 2))
+	{
+		Log("CoopRC:" @ CP.PlayerReplicationInfo.PlayerName @ "bled out after" @ CP.DownTime @ "s (gave up:" @ CP.bGiveUp $ ")");
+		CP.bWasDowned = false;
+		CP.Pawn.bIncapacitated = false;
+		CP.Pawn.bCannotDie = false; // otherwise Died just downs it again
+		CP.Pawn.Died(None, class'DamageBleedOut', CP.Pawn.Location);
+		CP.DownTime = 0;
+		CP.bGiveUp = false;
+	}
+}
+
+// Another human who could come and revive Of (or Boss's AI squadmates, if Of is Boss).
+function bool SomeoneElseUp(Controller Of)
+{
+	local Controller C;
+
+	for(C = Level.ControllerList; C != None; C = C.NextController)
+		if(C != Of && CoopPlayer(C) != None && IsUp(C))
+			return true;
+
+	return CoopPlayer(Of) != None && CoopPlayer(Of).CoopSlot < 0 && CoopPlayer(Of).SquadHasAI();
+}
+
+function ResetRevivedPawn(Pawn P)
+{
+	local Controller C;
+
+	P.SetRotation(rot(0,1,0) * P.Rotation.Yaw);
+	P.bPlayedDeath = false;
+	P.ChangeAnimation();
+
+	// Being downed put the gun away (CtrlIncapacitated.Timer -> Disarm); nothing raises it again.
+	if(CoopPlayer(P.Controller) != None)
+		CoopPlayer(P.Controller).RaiseWeapon(P);
+
+	for(C = Level.ControllerList; C != None; C = C.NextController)
+		if(CoopPlayer(C) != None && Viewport(CoopPlayer(C).Player) == None)
+			CoopPlayer(C).ClientResetPawn(P);
+}
 
 function bool IsUp(Controller C)
 {
@@ -681,6 +756,10 @@ event Tick(float Delta)
 
 	Super.Tick(Delta);
 
+	for(C = Level.ControllerList; C != None; C = C.NextController)
+		if(CoopPlayer(C) != None && CoopPlayer(C).ReviveTarget != None)
+			CoopPlayer(C).TickRevive(Delta);
+
 	CheckTime -= Delta;
 
 	if(CheckTime > 0)
@@ -701,8 +780,11 @@ event Tick(float Delta)
 
 		bAnyPlayer = true;
 
-		if(C.Pawn != None && C.Pawn.Health > 0)
+		// Downed players don't count, unless it's Boss and his AI squadmates can still revive him.
+		if(IsUp(C) || (C.Pawn != None && C.Pawn.bIncapacitated && CP.CoopSlot < 0 && CP.SquadHasAI()))
 			bAnyAlive = true;
+
+		TickDowned(CP);
 
 		// Back to their own eyes after a spawn or a briefing. ClientSetViewTarget is lost when it reaches
 		// the client before the new pawn does (joiners kept looking through Boss's eyes), so repeat it.
@@ -877,6 +959,8 @@ defaultproperties
 	LeashDistance=3000
 	LeashTime=20
 	WipeDelay=3
+	BleedOutTime=60
+	BleedOutAlone=10
 	ExitRadius=500
 	SlotClass(0)=Class'CTCharacters.Commando07Delta'
 	SlotClass(1)=Class'CTCharacters.Commando40Delta'
