@@ -24,7 +24,7 @@ var float StatusLogTime;        // client: next periodic status line in the log 
 replication
 {
 	reliable if(Role == ROLE_Authority)
-		ClientShowMenu, ClientPlayMovie, ClientStartIntro, ClientLobbyNotice, ClientTestSquadOrder, ClientEnsureProfile, ClientTestUse, ClientCoopMusic, ClientCoopBattleMusic, ClientTestLag, ClientResetPawn;
+		ClientShowMenu, ClientPlayMovie, ClientStartIntro, ClientLobbyNotice, ClientTestSquadOrder, ClientEnsureProfile, ClientTestUse, ClientCoopMusic, ClientCoopBattleMusic, ClientTestLag, ClientResetPawn, ClientPropState, ClientActorTransition;
 	reliable if(Role < ROLE_Authority)
 		ServerCatchUp, ServerCoopUse, ServerCoopStopUse, ServerCoopResync, ServerCoopGiveUp, ServerCoopRevive;
 	reliable if(bNetOwner && Role == ROLE_Authority)
@@ -277,6 +277,81 @@ simulated function RaiseWeapon(Pawn P)
 		SwitchToBestWeapon();
 }
 
+// A prop changed on the server (CoopGame.CheckProps): show the same here. Found by reference, or by position
+// if the engine doesn't replicate that prop to us.
+simulated function ClientPropState(Prop P, vector At, StaticMesh M, Material Skin, class<Emitter> FX, Sound Snd, bool bGone)
+{
+	local Prop Q;
+
+	if(P == None)
+		ForEach AllActors(class'Prop', Q)
+			if(VSize(Q.Location - At) < 16)
+				P = Q;
+
+	if(P != None)
+	{
+		if(bGone)
+		{
+			P.bHidden = true;
+			P.SetCollision(false, false, false);
+		}
+		else
+		{
+			if(M != None)
+			{
+				P.SetStaticMesh(None); // drop the old mesh's lighting, then set the new one
+				P.SetStaticMesh(M);
+			}
+			if(Skin != None)
+			{
+				P.CopyMaterialsToSkins();
+				P.Skins[0] = Skin;
+			}
+		}
+	}
+
+	Log("CoopRC: prop update" @ P @ "at" @ At @ "mesh" @ M @ "gone" @ bGone @ "fx" @ FX);
+
+	if(FX != None)
+		Spawn(FX,,, At);
+
+	if(Snd != None)
+	{
+		if(P != None)
+			P.PlaySound(Snd);
+		else if(Pawn != None)
+			Pawn.PlaySound(Snd);
+	}
+}
+
+// A droid dispenser (drop pod) took damage, shut down or blew up on the server (its MakeTransition, relayed by
+// CoopConsole): effect, sound, skin and animation.
+simulated function ClientActorTransition(Actor A, vector At, class<Emitter> FX, Sound Snd, Material Skin, name Anim, bool bLoop)
+{
+	if(FX != None)
+		Spawn(FX,,, At);
+
+	if(A == None)
+		return;
+
+	if(Snd != None)
+		A.PlaySound(Snd);
+
+	if(Skin != None)
+	{
+		A.CopyMaterialsToSkins();
+		A.Skins[0] = Skin;
+	}
+
+	if(Anim != '' && A.HasAnim(Anim))
+	{
+		if(bLoop)
+			A.LoopAnim(Anim);
+		else
+			A.PlayAnim(Anim);
+	}
+}
+
 // A revived player's pawn stood back up: our copy of it can still be in the downed pose.
 simulated function ClientResetPawn(Pawn P)
 {
@@ -304,10 +379,21 @@ simulated function ClientTestLag(int Milliseconds)
 // of arrives as None, so it's also found by position).
 exec function Use()
 {
+	// Done on the server; locally CTPlayer.Use would play the hand signal and switch to its "weapon",
+	// which on a joiner never switched back (no gun after using bacta, a panel or a charge).
 	if(Role < ROLE_Authority && ActivateItem(Target) != None && (TargetType == TGT_Panel || TargetType == TGT_DemolitionReady))
+	{
+		bUse = true;
 		ServerCoopUse(ActivateItem(Target), Target.Location, TargetType);
-	else if(Role < ROLE_Authority && Pawn(Target) != None && TargetType == TGT_FriendToHeal)
+		return;
+	}
+
+	if(Role < ROLE_Authority && Pawn(Target) != None && TargetType == TGT_FriendToHeal)
+	{
+		bUse = true;
 		ServerCoopRevive(Pawn(Target));
+		return;
+	}
 
 	Super.Use();
 }

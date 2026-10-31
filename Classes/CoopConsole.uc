@@ -15,7 +15,7 @@ var FunctionOverride MovieOverride;
 var FunctionOverride MovieTickOverride;
 var FunctionOverride NewGameOverride;
 var FunctionOverride UplinkOverride;
-var FunctionOverride MusicOverride, BattleMultiOverride, ForceBattleOverride, SoundMenuOverride, LoadGameOverride, BleedOutOverride;
+var FunctionOverride MusicOverride, BattleMultiOverride, ForceBattleOverride, SoundMenuOverride, LoadGameOverride, BleedOutOverride, DispenserFXOverride;
 var CoopArms         Arms;
 
 var bool   bIntroActive, bIntroHost, bReconnecting;
@@ -88,6 +88,10 @@ event Initialized()
 	ForceBattleOverride.Init(class'ACTION_ForceBattleMusic', 'InitActionFor', self, 'ForceBattleInitActionFor');
 	// SP bleeds Boss out at once when no AI squadmate can revive him (e.g. geo_01a's start); in co-op a
 	// human can, so CoopGame.TickDowned decides when a downed player dies.
+	// Droid dispensers (drop pods) show damage and destruction in MakeTransition, on the server only.
+	DispenserFXOverride = new class'FunctionOverride';
+	DispenserFXOverride.Init(class'DroidDispenser', 'MakeTransition', self, 'DispenserMakeTransition');
+
 	BleedOutOverride = new class'FunctionOverride';
 	BleedOutOverride.Init(class'Pawn', 'BleedOut', self, 'PawnBleedOut');
 
@@ -307,6 +311,23 @@ function MenuNewGameSelected()
 	}
 
 	M.NewGameSelected();
+}
+
+function DispenserMakeTransition(DroidDispenser.TransitionInfo Info)
+{
+	local DroidDispenser D;
+	local Controller C;
+
+	D = DroidDispenser(DispenserFXOverride.CurrentSelf);
+	D.MakeTransition(Info);
+
+	if(CoopGame(D.Level.Game) == None)
+		return;
+
+	for(C = D.Level.ControllerList; C != None; C = C.NextController)
+		if(CoopPlayer(C) != None && Viewport(CoopPlayer(C).Player) == None)
+			CoopPlayer(C).ClientActorTransition(D, D.Location + Info.TransitionEffectOffset, Info.TransitionEffect,
+				Info.TransitionSound, Info.TransitionMaterial, Info.TransitionAnim, Info.bAnimLoop);
 }
 
 function PawnBleedOut()

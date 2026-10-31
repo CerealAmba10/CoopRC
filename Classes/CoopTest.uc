@@ -12,6 +12,8 @@ var int Mode; // 1 = respawn/catch-up/wipe, 2 = level travel, 3 = spin the joine
               // 9 = joiner places and fires the geo_01a demolition charge
 var int Spin;
 var float StepTime;
+var vector ItemLoc;   // mode 9: where the item was (a charge is gone once it blows)
+var rotator ItemRot;
 
 function PostBeginPlay()
 {
@@ -106,6 +108,7 @@ function HostAimTest(Actor D, vector From)
 // server-side hold. Logs the item's state as it goes.
 function SquadItemTest()
 {
+	local Prop Bunker;
 	local ActivateItem D;
 	local string Map;
 	local name ItemTag;
@@ -124,10 +127,16 @@ function SquadItemTest()
 	ForEach AllActors(class'ActivateItem', D, ItemTag)
 		break;
 
-	if(D == None || Joiner.Pawn == None)
+	if(Joiner.Pawn == None || (D == None && Step < 4))
 		return;
 
-	if(int(StepTime) % 5 == 0)
+	if(D != None)
+	{
+		ItemLoc = D.Location;
+		ItemRot = D.Rotation;
+	}
+
+	if(D != None && int(StepTime) % 5 == 0)
 		Log("CoopTest: t=" $ int(StepTime) @ "step" @ Step @ D @ D.GetStateName() @ "usable" @ D.bIsUsable @ "user" @ D.User @ "joiner (server view) target" @ Joiner.Target @ Joiner.TargetType);
 
 	if(Step == 0 && StepTime >= 10 && StepTime < 11) // reach the meet-up, as if we'd walked there
@@ -146,7 +155,6 @@ function SquadItemTest()
 		if(!Joiner.Pawn.SetLocation(D.Location + (vect(85,0,0) >> D.Rotation) + vect(0,0,40)))
 			for(i = 0; i < 16 && !Joiner.Pawn.SetLocation(D.Location + 110 * vector(rot(0,1,0) * (i * 4096)) + vect(0,0,40)); i++);
 		Joiner.ClientSetLocation(Joiner.Pawn.Location, rotator(D.Location - Joiner.Pawn.Location));
-		HostAimTest(D, Joiner.Pawn.Location + vect(0,40,0));
 		Log("CoopTest: joiner moved next to" @ D @ "state" @ D.GetStateName() @ "dist" @ VSize(Joiner.Pawn.Location - D.Location));
 		Step = 1;
 		StepTime = 0;
@@ -172,9 +180,36 @@ function SquadItemTest()
 	}
 	else if(Step == 4 && StepTime >= 6)
 	{
-		Joiner.ClientTestUse(false, D.Location);
-		Log("CoopTest: after plunger:" @ D.GetStateName());
+		Joiner.ClientTestUse(false, ItemLoc);
+		Log("CoopTest: after plunger");
 		Step = 5;
+		StepTime = 0;
+	}
+	else if(Step == 5 && StepTime >= 3)
+	{
+		if(Joiner.Pawn != None && Joiner.Pawn.bIncapacitated)
+			CoopPlayer(Level.GetLocalPlayerController()).ServerRevive(Joiner.Pawn);
+		Step = 6;
+		StepTime = 0;
+	}
+	else if(Step == 6 && StepTime >= 6 && Joiner.Pawn != None)
+	{
+		// stand back and look at what the charge blew up (geo_01a's bunker), for a screenshot of the joiner's view
+		ForEach AllActors(class'Prop', Bunker, 'LargeBunker')
+			break;
+		if(Bunker != None)
+		{
+			Joiner.Pawn.SetLocation(Bunker.Location + Normal(ItemLoc - Bunker.Location) * 1100 + vect(0,0,250));
+			Joiner.ClientSetLocation(Joiner.Pawn.Location, rotator(Bunker.Location - Joiner.Pawn.Location));
+			Log("CoopTest: bunker" @ Bunker @ "mesh" @ Bunker.StaticMesh @ "state" @ Bunker.GetStateName());
+		}
+		Step = 7;
+		StepTime = 0;
+	}
+	else if(Step == 7 && StepTime >= 3)
+	{
+		Log("CoopTest: ready for screenshot");
+		Step = 8;
 	}
 }
 

@@ -36,6 +36,14 @@ var bool bInBriefing;
 var int WaitForJoiners;
 var float WaitDeadline, NextWaitMessage;
 var array<Actor> ServerOnlyProps;
+var array<Prop> WatchedProps;        // every prop, so its destruction can be shown on joiners (CheckProps)
+var array<name> WatchedState;
+var array<StaticMesh> WatchedMesh, WatchedOrigMesh;
+var array<Material> WatchedSkin, WatchedOrigSkin;
+var array<vector> WatchedLoc;
+var array<class<Emitter> > WatchedFX;
+var array<Sound> WatchedSnd;
+var bool bPropsWatched;
 var bool bProxiesMade;
 var int SlotClaimed[NUM_SLOTS]; // 1 once the map's AI version of that slot has been replaced
 
@@ -145,6 +153,136 @@ function FixReplicatedLooks()
 
 // Clients get a replicated stand-in for each server-only prop that has a mesh (once the host's
 // PlayerController exists: it owns them so the host doesn't see them twice).
+// Props (buildings, walls, barrels, crates, Karma props...) change on the server only when damaged or
+// destroyed: the destroyed mesh, skin, explosion and sound never reached joiners, and the new mesh that did
+// arrive kept the old mesh's lighting and didn't draw (geo_01a's bunker just vanished). Watch every prop
+// and send each change; the joiner applies it to its own copy (CoopPlayer.ClientPropState).
+function CheckProps()
+{
+	local Prop P;
+	local int i;
+	local name St;
+	local Material Skin;
+	local class<Emitter> FX;
+	local Sound Snd;
+
+	if(!bPropsWatched)
+	{
+		bPropsWatched = true;
+		ForEach AllActors(class'Prop', P)
+		{
+			// A client only keeps a replicated prop while it's relevant to it; dropped and resent, it comes
+			// back from the class defaults. Keep props relevant so destruction can be shown on them.
+			if(P.RemoteRole != ROLE_None)
+				P.bAlwaysRelevant = true;
+			i = WatchedProps.Length;
+			WatchedProps[i] = P;
+			WatchedState[i] = P.GetStateName();
+			WatchedMesh[i] = P.StaticMesh;
+			WatchedOrigMesh[i] = P.StaticMesh;
+			WatchedSkin[i] = PropSkin(P);
+			WatchedOrigSkin[i] = WatchedSkin[i];
+			WatchedLoc[i] = P.Location;
+			WatchedFX[i] = P.DestroyedState.TransitionEffect;
+			WatchedSnd[i] = P.DestroyedState.TransitionSound;
+		}
+		return;
+	}
+
+	for(i = 0; i < WatchedProps.Length; i++)
+	{
+		if(WatchedState[i] == 'CoopGone')
+			continue;
+
+		P = WatchedProps[i];
+
+		if(P == None || P.bDeleteMe) // destroyed outright (no destroyed mesh): hide it, and the explosion
+		{
+			if(WatchedState[i] != 'PropDestroyed' && WatchedState[i] != 'Exploding')
+				SendPropState(None, WatchedLoc[i], None, None, WatchedFX[i], WatchedSnd[i], true);
+			else
+				SendPropState(None, WatchedLoc[i], None, None, None, None, true);
+			WatchedState[i] = 'CoopGone';
+			continue;
+		}
+
+		St = P.GetStateName();
+		Skin = PropSkin(P);
+
+		if(St == WatchedState[i] && P.StaticMesh == WatchedMesh[i] && Skin == WatchedSkin[i])
+			continue;
+
+		FX = None;
+		Snd = None;
+		if(St != WatchedState[i])
+		{
+			if(St == 'PropDestroyed' || St == 'Exploding')
+			{
+				FX = P.DestroyedState.TransitionEffect;
+				Snd = P.DestroyedState.TransitionSound;
+			}
+			else if(St == 'PropDamaged')
+			{
+				FX = P.DamagedState.TransitionEffect;
+				Snd = P.DamagedState.TransitionSound;
+			}
+		}
+
+		WatchedState[i] = St;
+		WatchedMesh[i] = P.StaticMesh;
+		WatchedSkin[i] = Skin;
+		WatchedLoc[i] = P.Location;
+		SendPropState(P, P.Location, P.StaticMesh, Skin, FX, Snd, false);
+	}
+}
+
+function Material PropSkin(Actor A)
+{
+	if(A.Skins.Length > 0)
+		return A.Skins[0];
+	return None;
+}
+
+function SendPropState(Prop P, vector At, StaticMesh M, Material Skin, class<Emitter> FX, Sound Snd, bool bGone)
+{
+	local Controller C;
+
+	for(C = Level.ControllerList; C != None; C = C.NextController)
+		if(CoopPlayer(C) != None && Viewport(CoopPlayer(C).Player) == None)
+			CoopPlayer(C).ClientPropState(P, At, M, Skin, FX, Snd, bGone);
+}
+
+// Joining after things were blown up: show them blown up.
+function SendChangedProps(CoopPlayer CP)
+{
+	local int i;
+
+	for(i = 0; i < WatchedProps.Length; i++)
+	{
+		if(WatchedState[i] == 'CoopGone')
+			CP.ClientPropState(None, WatchedLoc[i], None, None, None, None, true);
+		else if(WatchedProps[i] != None && (WatchedMesh[i] != WatchedOrigMesh[i] || WatchedSkin[i] != WatchedOrigSkin[i]))
+			CP.ClientPropState(WatchedProps[i], WatchedLoc[i], WatchedMesh[i], WatchedSkin[i], None, None, false);
+	}
+}
+
+// The AI version of a commando a human plays can still appear after its slot was claimed: geo_01a spawns
+// Scorch from a factory on "levelstart", which with the squad link-up comes after the joiners. Remove it.
+function RemoveLateSlotAI()
+{
+	local int Slot;
+
+	if(bInBriefing)
+		return;
+
+	for(Slot = 0; Slot < NUM_SLOTS; Slot++)
+		if(SlotClaimed[Slot] != 0 && SlotOwner[Slot] != None && !SlotOwner[Slot].bDeleteMe && FindSlotAI(Slot) != None)
+		{
+			Log("CoopRC: removing a late AI" @ SlotName[Slot] @ "(played by" @ SlotOwner[Slot].PlayerReplicationInfo.PlayerName $ ")");
+			RemoveSlotAI(Slot);
+		}
+}
+
 function MakeProxies()
 {
 	local PlayerController Host;
@@ -222,6 +360,9 @@ event PostLogin(PlayerController NewPlayer)
 	}
 
 	Super.PostLogin(NewPlayer);
+
+	if(CP != None && Viewport(NewPlayer.Player) == None)
+		SendChangedProps(CP);
 
 	// The level's music usually starts at load, before anyone has joined (CoopConsole.MusicInitActionFor).
 	if(CP != None && Viewport(NewPlayer.Player) == None && CurrentMusic != None)
@@ -512,11 +653,22 @@ function RestartPlayer(Controller aPlayer)
 // scripts drive progression.
 function ClaimSlot(int Slot)
 {
-	local Actor A;
-	local Pawn P;
 	local CoopEventRelay R;
 
 	SlotClaimed[Slot] = 1;
+	RemoveSlotAI(Slot);
+
+	ForEach DynamicActors(class'CoopEventRelay', R)
+	{
+		if(R.Slot == Slot)
+			R.SlotClaimed();
+	}
+}
+
+function RemoveSlotAI(int Slot)
+{
+	local Actor A;
+	local Pawn P;
 
 	ForEach DynamicActors(SlotClass[Slot], A)
 	{
@@ -537,12 +689,6 @@ function ClaimSlot(int Slot)
 		}
 
 		P.Destroy();
-	}
-
-	ForEach DynamicActors(class'CoopEventRelay', R)
-	{
-		if(R.Slot == Slot)
-			R.SlotClaimed();
 	}
 }
 
@@ -756,6 +902,8 @@ event Tick(float Delta)
 
 	Super.Tick(Delta);
 
+	CheckProps();
+
 	for(C = Level.ControllerList; C != None; C = C.NextController)
 		if(CoopPlayer(C) != None && CoopPlayer(C).ReviveTarget != None)
 			CoopPlayer(C).TickRevive(Delta);
@@ -767,6 +915,7 @@ event Tick(float Delta)
 
 	CheckTime = 1.0;
 	CheckExit();
+	RemoveLateSlotAI();
 
 	if(!bProxiesMade)
 		MakeProxies();
